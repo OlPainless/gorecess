@@ -139,6 +139,38 @@ func SchemasGET(c *gin.Context) {
 
 }
 
+func SchemasPATCH(c *gin.Context) {
+
+	var schema SchemaTO
+	schemaIdStr := c.Params.ByName("schemaId")
+	schemaId, err := strconv.Atoi(schemaIdStr)
+
+	if err != nil {
+		logger.Error("Failed to parse schema path variable: ", err)
+		_CreateErrorMessage(c, 400, STATUS_INVALID_PATH_VARIABLE)
+		return
+	}
+
+	err = c.Bind(&schema)
+	if err != nil {
+		logger.Error("Failed to bind Schema from payload: ", err)
+		_CreateErrorMessage(c, 400, STATUS_INVALID_PAYLOAD)
+		return
+	}
+
+	schema.Id = schemaId
+
+	_, status := facade.UpdateSchema(&schema)
+	if status != STATUS_OK {
+		logger.Error("Failed to update schema:", err)
+		_CreateErrorMessage(c, 400, int(status))
+		return
+	}
+
+	c.JSON(200, schema)
+
+}
+
 // Get all schemas
 func SchemasAllGET(c *gin.Context) {
 
@@ -184,5 +216,26 @@ func TimeslotsPATCH(c *gin.Context) {
 
 // Location
 func LocationPOST(c *gin.Context) {
-	facade.CreateNewLocation(nil)
+
+	var location LocationTO
+	var locationId int
+	var status Status
+	var err error
+
+	err = c.Bind(&location)
+	if err != nil {
+		logger.Error("Failed to bind Location from payload: ", err)
+		_CreateErrorMessage(c, 400, STATUS_INVALID_PAYLOAD)
+		return
+	}
+
+	locationId, status = facade.CreateNewLocation(&location)
+
+	if status != STATUS_OK {
+		_CreateErrorMessage(c, 400, STATUS_ERROR)
+		return
+	}
+
+	c.JSON(200, gin.H{"id": locationId})
+
 }

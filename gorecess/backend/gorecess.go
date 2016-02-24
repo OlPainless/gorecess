@@ -81,6 +81,7 @@ func _StartGin() {
 	router.GET("/schemas", app.SchemasAllGET)
 	router.GET("/schemas/:schemaId", app.SchemasGET)
 	router.POST("/schemas", app.SchemasPOST)
+	router.PATCH("/schemas/:schemaId", app.SchemasPATCH)
 
 	// Timeslot
 	router.POST("/timeslots", app.TimeslotsPOST)

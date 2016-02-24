@@ -8,6 +8,7 @@ type Facade interface {
 	// Schema
 	CreateNewSchema(schema *SchemaTO) (int, Status)
 	GetSchema(id int) (*SchemaTO, Status)
+	UpdateSchema(schema *SchemaTO) (int, Status)
 
 	// Timeslot
 	CreateNewTimeslot(timeslot *TimeslotTO) (int, Status)
@@ -47,6 +48,15 @@ func (this *FacadeImpl) GetSchema(id int) (*SchemaTO, Status) {
 	return schema, STATUS_OK
 }
 
+func (this *FacadeImpl) UpdateSchema(schema *SchemaTO) (int, Status) {
+	err := this.db.UpdateSchema(schema)
+	if err != nil {
+		this.log.Error("Failed to get schema:", err)
+		return schema.Id, STATUS_ERROR
+	}
+	return schema.Id, STATUS_OK
+}
+
 func (this *FacadeImpl) CreateNewTimeslot(timeslot *TimeslotTO) (int, Status) {
 	timeslotId, err := this.db.InsertTimeslot(timeslot)
 	if err != nil {
@@ -58,7 +68,11 @@ func (this *FacadeImpl) CreateNewTimeslot(timeslot *TimeslotTO) (int, Status) {
 }
 
 func (this *FacadeImpl) CreateNewLocation(location *LocationTO) (int, Status) {
-
-	panic("TODO")
-	return -1, -1
+	locationId, err := this.db.InsertLocation(location)
+	if err != nil {
+		this.log.Error("Failed to create new location:", err)
+		return -1, STATUS_ERROR
+	}
+	this.log.Infof("Created new location with id=%d", locationId)
+	return locationId, STATUS_OK
 }

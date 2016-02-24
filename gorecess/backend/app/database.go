@@ -11,9 +11,11 @@ import (
 type Database interface {
 	InsertSchema(schema *SchemaTO) (int, error)
 	GetSchema(id int) (*SchemaTO, error)
+	UpdateSchema(schema *SchemaTO) error
 
 	//GetTimelotBySchema(schema int) ([]TimeslotTO, error)
 	InsertTimeslot(timeslot *TimeslotTO) (int, error)
+	DeleteSchemaTimeslots(id int) error
 
 	InsertLocation(location *LocationTO) (int, error)
 	//DeleteTimeslot(id int)
@@ -25,26 +27,6 @@ type DatabaseImpl struct {
 	log *logging.Logger
 
 	statements map[string]*sql.Stmt
-
-	// Statements
-	insertSchemaStmt    *sql.Stmt
-	getSingleSchemaStmt *sql.Stmt
-	getAllSchemaStmt    *sql.Stmt
-
-	// Locations
-	insertLocationStmt    *sql.Stmt
-	getSingleLocationStmt *sql.Stmt
-	//getSchemaLocationStmt *sql.Stmt
-
-	// Timeslots
-	insertTimeslotStmt              *sql.Stmt
-	insertTimeslotLocationArrayStmt *sql.Stmt
-	deleteTimeslotStmt              *sql.Stmt
-	deleteTimeslotLocationArrayStmt *sql.Stmt
-	getSingleTimeslotStmt           *sql.Stmt
-	getSchemaTimeslotStmt           *sql.Stmt
-
-	testStmt *sql.Stmt
 }
 
 func NewDatabaseImpl(database string, statementFile string) (*DatabaseImpl, error) {
@@ -71,10 +53,6 @@ func NewDatabaseImpl(database string, statementFile string) (*DatabaseImpl, erro
 
 	err = d._LoadStatements(statementFile)
 	return d, err
-
-	//	err = d._CreateStatements(statements)
-	//	return d, err
-
 }
 
 func (this *DatabaseImpl) _LoadStatements(statementFile string) error {
@@ -107,173 +85,109 @@ func (this *DatabaseImpl) _LoadStatements(statementFile string) error {
 	return nil
 }
 
-//func (this *DatabaseImpl) _CreateStatements() error {
-//	var err error
-
-//	this.insertSchemaStmt, err = this.db.Prepare("INSERT INTO Schema(name, state) VALUES(?, ?);")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	this.getSingleSchemaStmt, err = this.db.Prepare("SELECT * FROM Schema WHERE id=?;")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	this.getSingleLocationStmt, err = this.db.Prepare("SELECT * FROM Location WHERE id=?;")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	//	this.getSchemaLocationStmt, err = this.db.Prepare("SELECT * FROM Location WHERE schema=?;")
-//	//	if err != nil {
-//	//		this.log.Error("Failed to create statement", err)
-//	//		return err
-//	//	}
-
-//	this.getSingleTimeslotStmt, err = this.db.Prepare("SELECT * FROM Timeslot WHERE id=?;")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	this.getSchemaTimeslotStmt, err = this.db.Prepare("SELECT * FROM Timeslot WHERE schema=?;")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	this.insertLocationStmt, err = this.db.Prepare("INSERT INTO Location(name) VALUES(?);")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	this.insertTimeslotStmt, err = this.db.Prepare("INSERT INTO Timeslot(schema, start, end) VALUES(?,?,?);")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	this.insertTimeslotLocationArrayStmt, err = this.db.Prepare("INSERT INTO Timeslot_location_array(timeslot, location) VALUES(?,?);")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	this.deleteTimeslotLocationArrayStmt, err = this.db.Prepare("DELETE FROM Timeslot_location_array WHERE timeslot=?;")
-//	if err != nil {
-//		this.log.Error("Failed to create statement", err)
-//		return err
-//	}
-
-//	return nil
-//}
-
 func (this *DatabaseImpl) InsertSchema(schema *SchemaTO) (int, error) {
 
 	var result sql.Result
 	var err error
 	var schemaId int64
+	var tx *sql.Tx
 
-	result, err = this.statements["INSERTSCHEMA"].Exec(schema.Name, schema.State)
+	// FIXME Transactions do not work correctly
+
+	// Start transaction
+	tx, err = this.db.Begin()
 	if err != nil {
+		return -1, err
+	}
+
+	result, err = tx.Stmt(this.statements["INSERTSCHEMA"]).Exec(schema.Name, schema.State)
+	if err != nil {
+		tx.Rollback()
 		return -1, err
 	}
 
 	schemaId, err = result.LastInsertId()
 	if err != nil {
+		tx.Rollback()
 		return -1, err
 	}
 
+	// Insert timeslots
+	for _, ts := range schema.Timeslots {
+		ts.Id = int(schemaId)
+		_, err = this.InsertTimeslot(&ts)
+		if err != nil {
+			tx.Rollback()
+			return -1, err
+		}
+	}
+
+	tx.Commit()
+
 	return int(schemaId), nil
+}
+
+func (this *DatabaseImpl) UpdateSchema(schema *SchemaTO) error {
+	//var result sql.Result
+	var err error
+	var tx *sql.Tx
+
+	tx, err = this.db.Begin()
+	if err != nil {
+		this.log.Errorf("Failed to update schema. id=%s. Error=", schema.Id, err.Error())
+		return err
+	}
+
+	// Update schema
+	_, err = tx.Stmt(this.statements["UPDATESCHEMA"]).Exec(schema.Name, schema.Id)
+	if err != nil {
+		this.log.Errorf("Failed to update schema. id=%s. Error=", schema.Id, err.Error())
+		tx.Rollback()
+		return err
+	}
+
+	// Delete old timeslot
+	err = this.__DeleteSchemaTimeslots(tx, schema.Id)
+	if err != nil {
+		this.log.Errorf("Failed to update schema. id=%s. Error=", schema.Id, err.Error())
+		tx.Rollback()
+		return err
+	}
+
+	// Insert new timeslots
+	for _, ts := range schema.Timeslots {
+		ts.Schema = schema.Id
+		_, err = this.__InsertTimeslot(tx, &ts)
+		if err != nil {
+			this.log.Errorf("Failed to update schema. id=%s. Error=", schema.Id, err.Error())
+			return err
+		}
+	}
+	return nil
+
 }
 
 func (this *DatabaseImpl) GetSchema(id int) (*SchemaTO, error) {
 
 	var err error
 	var response SchemaTO
-	//var locations []LocationTO
 	var timeslots []TimeslotTO
-	//	var rows *sql.Rows
-
-	//	rows, err = this.getSingleSchemaStmt.Query(id)
-	//	if err != nil {
-	//		return nil, err
-	//	}
-	//	if rows == nil {
-	//		return nil, err
-	//	}
 
 	row := this.statements["GETSINGLESCHEMA"].QueryRow(id)
 	err = row.Scan(&response.Id, &response.Name, &response.State)
 
 	if err != nil {
+		this.log.Errorf("Failed to get schema. id=%s. Error=", id, err.Error())
 		return nil, err
 	}
 
-	// Locations
-	//	locations, err = this.GetLocationBySchema(id)
-	//	if err != nil {
-	//		return nil, err
-	//	}
-	//	locationIds := make([]int, len(locations))
-	//	for idx, loc := range locations {
-	//		locationIds[idx] = loc.Id
-	//	}
-
 	// Timeslots
 	timeslots, err = this.GetTimelotBySchema(id)
-
-	//	if err != nil {
-	//		return nil, err
-	//	}
-	//	timeslotIds := make([]int, len(timeslots))
-	//	for idx, slot := range timeslots {
-	//		timeslotIds[idx] = slot.Id
-	//	}
-
 	response.Timeslots = timeslots
 
 	return &response, err
 
 }
-
-//func (this *DatabaseImpl) GetLocationBySchema(schema int) ([]LocationTO, error) {
-
-//	var err error
-//	var rows *sql.Rows
-//	var locations []LocationTO = make([]LocationTO, 0, 4)
-
-//	// Fill locations
-//	rows, err = this.getSchemaLocationStmt.Query(schema)
-//	if err != nil {
-//		return nil, err
-//	}
-
-//	// Fetch each timeslot result
-//	for rows.Next() {
-//		var locationTO LocationTO
-
-//		err = rows.Scan(&locationTO.Id, &locationTO.Name, &locationTO.Schema)
-//		if err != nil {
-//			return nil, err
-//		}
-
-//		locations = append(locations, locationTO)
-//	}
-//	err = rows.Err()
-//	if err != nil {
-//		return nil, err
-//	}
-//	rows.Close()
-
-//	return locations, err
-
-//}
 
 func (this *DatabaseImpl) GetTimelotBySchema(schema int) ([]TimeslotTO, error) {
 
@@ -283,46 +197,164 @@ func (this *DatabaseImpl) GetTimelotBySchema(schema int) ([]TimeslotTO, error) {
 
 	// Fill timeslots
 	rows, err = this.statements["GETSCHEMATIMESLOT"].Query(schema)
+	defer rows.Close()
 	if err != nil {
+		this.log.Errorf("Failed to get timeslot by schema. id=%s. Error=", schema, err.Error())
 		return nil, err
 	}
 
 	// Fetch each timeslot result
 	for rows.Next() {
 		var timeslotTO TimeslotTO
+		var locationRows *sql.Rows
 
 		err = rows.Scan(&timeslotTO.Id, &timeslotTO.Schema, &timeslotTO.Start, &timeslotTO.End)
 		if err != nil {
+			this.log.Errorf("Failed to get timeslot by schema. id=%s. Error=", schema, err.Error())
 			return nil, err
 		}
 
+		// Fetch locations
+		timeslotTO.Locations = make([]int, 0, 4)
+		locationRows, err = this.statements["GETTIMESLOTLOCATIONS"].Query(timeslotTO.Id)
+		if err != nil {
+			this.log.Errorf("Failed to get timeslot by schema. id=%s. Error=", schema, err.Error())
+			return nil, err
+		}
+
+		for locationRows.Next() {
+			var location LocationTO
+			err = locationRows.Scan(&location.Id, &location.Name)
+			if err != nil {
+				locationRows.Close()
+				this.log.Errorf("Failed to get timeslot by schema. id=%s. Error=", schema, err.Error())
+				return nil, err
+			}
+			timeslotTO.Locations = append(timeslotTO.Locations, location.Id)
+		}
+
 		timeslots = append(timeslots, timeslotTO)
+		locationRows.Close()
 	}
-	err = rows.Err()
-	if err != nil {
-		return nil, err
-	}
-	rows.Close()
 
 	return timeslots, err
 }
 
 func (this *DatabaseImpl) InsertTimeslot(timeslot *TimeslotTO) (int, error) {
+
+	var err error
+	var tx *sql.Tx
+	var timeslotId int
+
+	tx, err = this.db.Begin()
+	if err != nil {
+		this.log.Errorf("Failed to insert timeslot. id=%s. Error=", timeslot.Schema, err.Error())
+		return -1, nil
+	}
+
+	timeslotId, err = this.__InsertTimeslot(tx, timeslot)
+	if err != nil {
+		this.log.Errorf("Failed to insert timeslot. id=%s. Error=", timeslot.Schema, err.Error())
+		tx.Rollback()
+		return -1, nil
+	}
+
+	return timeslotId, err
+}
+
+func (this *DatabaseImpl) __InsertTimeslot(tx *sql.Tx, timeslot *TimeslotTO) (int, error) {
 	var result sql.Result
 	var err error
 	var timeslotId int64
 
-	result, err = this.statements["INSERTTIMESLOT"].Exec(timeslot.Schema, timeslot.Start, timeslot.End)
+	result, err = tx.Stmt(this.statements["INSERTTIMESLOT"]).Exec(timeslot.Schema, timeslot.Start, timeslot.End)
 	if err != nil {
+		this.log.Errorf("Failed to insert timeslot. id=%s. Error=", timeslot.Schema, err.Error())
 		return -1, err
 	}
 
 	timeslotId, err = result.LastInsertId()
 	if err != nil {
+		this.log.Errorf("Failed to insert timeslot. id=%s. Error=", timeslot.Schema, err.Error())
 		return -1, err
 	}
 
+	// Insert location array
+	for _, loc := range timeslot.Locations {
+		result, err = tx.Stmt(this.statements["INSERTTIMESLOTLOCATIONARRAY"]).Exec(timeslotId, loc)
+		if err != nil {
+			// TODO Rollback
+			this.log.Errorf("Failed to insert timeslot. id=%s. Error=", timeslot.Schema, err.Error())
+			return -1, err
+		}
+	}
+
 	return int(timeslotId), nil
+}
+
+func (this *DatabaseImpl) DeleteSchemaTimeslots(id int) error {
+
+	var tx *sql.Tx
+	var err error
+
+	tx, err = this.db.Begin()
+	if err != nil {
+		this.log.Errorf("Failed to delete schema timeslot. id=%s. Error=", id, err.Error())
+		return err
+	}
+
+	err = this.__DeleteSchemaTimeslots(tx, id)
+	if err != nil {
+		this.log.Errorf("Failed to delete schema timeslot. id=%s. Error=", id, err.Error())
+		tx.Rollback()
+		return err
+	}
+	tx.Commit()
+	return nil
+
+}
+
+func (this *DatabaseImpl) __DeleteSchemaTimeslots(tx *sql.Tx, id int) error {
+	var rows *sql.Rows
+	var err error
+	var timeslotIds []int
+
+	// Fetch affected timeslots
+	rows, err = tx.Stmt(this.statements["GETSCHEMATIMESLOT"]).Query(id)
+	if err != nil {
+		this.log.Errorf("Failed to delete schema timeslot. id=%s. Error=", id, err.Error())
+		return err
+	}
+	defer rows.Close()
+
+	timeslotIds = make([]int, 0, 4)
+
+	for rows.Next() {
+		var timeslot TimeslotTO
+		err = rows.Scan(&timeslot.Id, &timeslot.Schema, &timeslot.Start, &timeslot.End)
+		if err != nil {
+			this.log.Errorf("Failed to delete schema timeslot. id=%s. Error=", id, err.Error())
+			return err
+		}
+		timeslotIds = append(timeslotIds, timeslot.Id)
+	}
+
+	_, err = tx.Stmt(this.statements["DELETESCHEMATIMESLOTS"]).Exec(id)
+	if err != nil {
+		this.log.Errorf("Failed to delete schema timeslot. id=%s. Error=", id, err.Error())
+		return err
+	}
+
+	for _, ts := range timeslotIds {
+		// Delete location array
+		_, err = tx.Stmt(this.statements["DELETETIMESLOTLOCATIONARRAY"]).Exec(ts)
+		if err != nil {
+			this.log.Errorf("Failed to delete schema timeslot. id=%s. Error=", id, err.Error())
+			return err
+		}
+	}
+
+	return err
 }
 
 func (this *DatabaseImpl) InsertLocation(location *LocationTO) (int, error) {
@@ -332,6 +364,7 @@ func (this *DatabaseImpl) InsertLocation(location *LocationTO) (int, error) {
 
 	result, err = this.statements["INSERTLOCATION"].Exec(location.Name)
 	if err != nil {
+		//this.log.Errorf("Failed to insert location. id=%s. Error=", id, err.Error())
 		return -1, err
 	}
 

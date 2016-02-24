@@ -24,9 +24,8 @@ type TimeslotTO struct {
 }
 
 type LocationTO struct {
-	Id     int    `json:"id"`
-	Schema int    `json:"schema"`
-	Name   string `json:"name"`
+	Id   int    `json:"id"`
+	Name string `json:"name"`
 }
 
 type PeriodTO struct {
